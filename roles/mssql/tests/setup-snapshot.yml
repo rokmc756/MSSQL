@@ -1,0 +1,38 @@
+---
+- name: Setup snapshot
+  hosts: all
+  tasks:
+    - name: Set facts used by role
+      include_role:
+        name: linux-system-roles.mssql
+        tasks_from: set_vars.yml
+        public: true
+
+    - name: Deploy the GPG key for Microsoft repositories
+      rpm_key:
+        key: "{{ mssql_rpm_key }}"
+        state: present
+
+    # The tools repo is required for powershell
+    - name: Configure the Microsoft SQL Server Tools repository
+      yum_repository:
+        name: packages-microsoft-com-prod
+        description: Microsoft SQL Server Tools
+        baseurl: "{{ mssql_client_repository }}"
+        gpgcheck: true
+
+    - name: Cache packages required for tests
+      vars:
+        __mssql_packages:
+          - "{{ __mssql_server_packages }}"
+          - "{{ __mssql_server_fts_packages }}"
+          - "{{ __mssql_server_ha_packages }}"
+          - "{{ __mssql_powershell_packages }}"
+        mssql_version: "{{ item }}"
+      include_tasks: tasks/snapshot_install_packages.yml
+      loop: "{{ __mssql_supported_versions }}"
+
+    - name: Remove the Microsoft SQL Server Tools repository
+      yum_repository:
+        name: packages-microsoft-com-prod
+        state: absent

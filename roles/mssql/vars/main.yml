@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT
+---
+__mssql_required_facts:
+  - distribution
+  - distribution_major_version
+  - distribution_version
+  - os_family
+__mssql_server_packages: mssql-server
+__mssql_client_packages: [mssql-tools, unixODBC-devel]
+__mssql_server_fts_packages: mssql-server-fts
+__mssql_server_ha_packages: mssql-server-ha
+__mssql_powershell_packages: powershell
+__mssql_supported_versions:
+  - 2017
+  - 2019
+  - 2022
+# Dicts define SQL Server version and the corresponding mssql-server version
+__mssql_version_package_mapping:
+  - 2017: 14
+  - 2019: 15
+  - 2022: 16
+__mssql_keytab_path: /var/opt/mssql/secrets/mssql.keytab
+__mssql_conf_path: /var/opt/mssql/mssql.conf
+__mssql_conf_cli: /opt/mssql/bin/mssql-conf
+__mssql_ha_replica_types_all:
+  - primary
+  - synchronous
+  - asynchronous
+  - witness
+  - absent
+__mssql_ha_replica_types_secondary:
+  - synchronous
+  - asynchronous
+  - witness
+__mssql_ha_replica_types_external:
+  - primary
+  - synchronous
+  - asynchronous
+__mssql_ha_endpoint_role: >-
+  {%- if mssql_ha_replica_type in __mssql_ha_replica_types_external -%}
+  ALL
+  {%- elif mssql_ha_replica_type == 'witness' -%}
+  WITNESS
+  {%- else -%}
+  null
+  {%- endif -%}
+__mssql_ha_db_failover: >-
+  {%- if mssql_ha_ag_cluster_type | lower == 'external' -%}
+  ON
+  {%- elif mssql_ha_ag_cluster_type | lower == 'none' -%}
+  OFF
+  {%- else -%}
+  null
+  {%- endif -%}
+__mssql_ha_cert_dest: /var/opt/mssql/data/{{ mssql_ha_cert_name }}.cer
+__mssql_ha_private_key_dest: /var/opt/mssql/data/{{ mssql_ha_cert_name }}.pvk

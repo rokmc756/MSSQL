@@ -1,0 +1,1199 @@
+# SPDX-License-Identifier: MIT
+---
+- name: Ensure ansible_facts and variables used by role
+  include_tasks: set_vars.yml
+
+# This is required to prevent the role from using a __mssql_sqlcmd_login_cmd
+# variable value from a previous role invocation
+- name: Unset the __mssql_sqlcmd_login_cmd fact
+  set_fact:
+    __mssql_sqlcmd_login_cmd: null
+
+- name: Link the deprecated mssql_input_sql_file fact
+  when: mssql_input_sql_file is defined
+  block:
+    - name: Print that the mssql_input_sql_file variable is deprecated
+      debug:
+        msg: >-
+          The mssql_input_sql_file variable is deprecated and will be removed
+          in a future version. Edit your playbook to use
+          mssql_post_input_sql_file and mssql_pre_input_sql_file variables
+          instead.
+
+    - name: Link the deprecated mssql_input_sql_file fact
+      set_fact:
+        mssql_post_input_sql_file: "{{ mssql_input_sql_file }}"
+
+- name: Link the deprecated mssql_ha_listener_port fact
+  when: mssql_ha_listener_port is defined
+  block:
+    - name: Print that the variable is deprecated
+      debug:
+        msg: >-
+          The mssql_ha_listener_port variable is deprecated and will be removed
+          in a future version. Edit your playbook to use the
+          mssql_ha_endpoint_port variable instead.
+
+    - name: Link the deprecated mssql_ha_listener_port fact
+      set_fact:
+        mssql_ha_endpoint_port: "{{ mssql_ha_listener_port }}"
+
+- name: Verify that the user accepts EULA variables
+  assert:
+    that:
+      - mssql_accept_microsoft_odbc_driver_17_for_sql_server_eula | bool
+      - mssql_accept_microsoft_cli_utilities_for_sql_server_eula | bool
+      - mssql_accept_microsoft_sql_server_standard_eula | bool
+    fail_msg:
+      - "You must accept EULA by setting the following variables to true:"
+      - "mssql_accept_microsoft_odbc_driver_17_for_sql_server_eula"
+      - "mssql_accept_microsoft_cli_utilities_for_sql_server_eula"
+      - "mssql_accept_microsoft_sql_server_standard_eula"
+
+- name: Verify that EL < 8 is not used with mssql_ha_configure=true
+  fail:
+    msg: mssql_ha_configure=true does not support running against EL 7 hosts
+  when:
+    - mssql_ha_configure | bool
+    - ansible_distribution in ['CentOS', 'RedHat']
+    - ansible_distribution_version is version('8', '<')
+
+- name: Verify if the mssql_ha_replica_type variable is provided correctly
+  assert:
+    that: mssql_ha_replica_type in __mssql_ha_replica_types_all
+    # noqa jinja[spacing]
+    fail_msg: >-
+      You must set the mssql_ha_replica_type variable to one of
+      {{ __mssql_ha_replica_types_all | join (', ') }}
+  when: mssql_ha_configure | bool
+
+- name: Verify that 'mssql_ha_replica_type = primary' is provided once
+  assert:
+    that: ansible_play_hosts_all |
+        map('extract', hostvars, 'mssql_ha_replica_type') |
+        select('match', '^primary$') |
+        list |
+        length == 1
+    fail_msg: >-
+      You must set the mssql_ha_replica_type variable to 'primary' for one of
+      your managed nodes
+  run_once: true
+  when: mssql_ha_configure | bool
+
+- name: Gather package facts
+  package_facts:
+    manager: auto
+  no_log: true
+
+- name: Set fact with the currently installed SQL Server version if any
+  set_fact:
+    __mssql_current_version: "{{ item.key }}"
+  when:
+    - ansible_facts.packages["mssql-server"][0]["version"] is defined
+    - ansible_facts.packages["mssql-server"][0]["version"].split(".")
+      | first | int == item.value
+  with_dict: "{{ __mssql_version_package_mapping }}"
+
+- name: Set mssql_version variable if user does not define it
+  set_fact:
+    mssql_version: "{{ __mssql_current_version }}"
+  when:
+    - mssql_version is none
+    - __mssql_current_version is defined
+
+- name: Verify if the mssql_version variable is provided correctly
+  assert:
+    that: mssql_version | int in __mssql_supported_versions
+    fail_msg: >-
+      You must set the mssql_version variable to one of
+      {{ __mssql_supported_versions | join(", ") }}
+
+- name: Verify that version 2022 is not used with RHEL 7
+  fail:
+    msg: >-
+      SQL Server 2022 does not support EL 7 hosts
+  when:
+    - mssql_version | int == 2022
+    - ansible_distribution in ['CentOS', 'RedHat']
+    - ansible_distribution_major_version is version('8', '<')
+
+- name: >-
+    Verify if mssql_version is not smaller then the existing SQL Server version
+  fail:
+    msg:
+      - >-
+        "You set mssql_version to {{ mssql_version }}, but your SQL Server is
+        of higher version"
+      - "The role does not support downgrading SQL Server"
+  when:
+    - mssql_version | int == item.key
+    - ansible_facts.packages["mssql-server"][0]["version"] is defined
+    - ansible_facts.packages["mssql-server"][0]["version"].split(".")
+      | first | int > item.value
+  with_dict: "{{ __mssql_version_package_mapping }}"
+
+- name: Deploy the GPG key for Microsoft repositories
+  rpm_key:
+    key: "{{ mssql_rpm_key }}"
+    state: present
+
+- name: Prepare for the upgrade
+  when: mssql_upgrade | bool
+  block:
+    # This works only on systems that use yum or dnf
+    - name: >-
+        Update all packages from SQL Server repo
+        version {{ __mssql_current_version }}
+      package:
+        name: "*"
+        disablerepo: "*"
+        enablerepo: >-
+          packages-microsoft-com-mssql-server-{{ __mssql_current_version }}
+        state: latest  # noqa package-latest
+
+    - name: Get yum repositories  # noqa command-instead-of-module
+      shell: >-
+        set -euo pipefail;
+        yum repolist --enabled
+        | grep packages-microsoft-com-mssql-server-
+        | grep -v packages-microsoft-com-mssql-server-{{ mssql_version }}
+        | cut -d" " -f 1
+        || true
+      register: __mssql_curr_repo
+      changed_when: false
+
+    - name: >-
+        Remove the current Microsoft SQL Server repository to upgrade to
+        {{ mssql_version }}
+      yum_repository:
+        name: "{{ __mssql_curr_repo.stdout }}"
+        state: absent
+      when: __mssql_curr_repo.stdout | length > 0
+
+- name: Configure the Microsoft SQL Server repo version {{ mssql_version }}
+  yum_repository:
+    name: packages-microsoft-com-mssql-server-{{ mssql_version | int }}
+    description: Microsoft SQL Server {{ mssql_version }}
+    baseurl: "{{ mssql_server_repository }}"
+    gpgcheck: true
+  when: >-
+    (__mssql_server_packages not in ansible_facts.packages) or
+    (mssql_upgrade | bool)
+
+- name: Ensure the package {{ __mssql_server_packages }}
+  package:
+    name: "{{ __mssql_server_packages }}"
+    state: "{{ 'latest' if mssql_upgrade else 'present' }}"
+
+# /opt/mssql/bin/sqlservr requires libldap-2.4.so.2. Latest Fedora use newer
+# libldap by default, therefore, it is required to install openldap-compat
+# because it provides libldap-2.4.so.2.
+- name: Ensure that the openldap-compat package is installed
+  package:
+    name: openldap-compat
+    state: present
+  when:
+    - ansible_distribution == "Fedora"
+    - ansible_distribution_version | int >= 34
+
+- name: Check if the errorlog file exists and its location
+  shell: |
+    set -euo pipefail
+    errorlog="$(grep '^errorlogfile = ' {{ __mssql_conf_path }} \
+    | sed 's/errorlogfile : //')" || :
+    if [ -s "${errorlog}" ]; then
+      echo "${errorlog}"
+    elif [ -s /var/opt/mssql/log/errorlog ]; then
+      echo /var/opt/mssql/log/errorlog
+    else
+      echo ""
+    fi
+  changed_when: false
+  register: __mssql_errorlog
+
+- name: Gather system services facts
+  service_facts:
+  no_log: true
+
+- name: Set the __mssql_is_setup variable
+  set_fact:
+    __mssql_is_setup: >-
+      {{ ('running' in
+      ansible_facts['services']['mssql-server.service']['state']) or
+      ('enabled' in
+      ansible_facts['services']['mssql-server.service']['status']) or
+      (__mssql_errorlog.stdout | length > 0) }}
+
+- name: Verify that the variables required for setting up MSSQL are defined
+  when: not __mssql_is_setup
+  assert:
+    that:
+      - mssql_password is not none
+      - mssql_edition is not none
+    fail_msg:
+      - "You must define the following variables to set up MSSQL:"
+      - "mssql_password"
+      - "mssql_edition"
+
+- name: Set up MSSQL
+  when: not __mssql_is_setup
+  block:
+    # Setting MSSQL_SA_PASSWORD inline for security because setting it with
+    # environment: reveals the value when running playbooks with high verbosity
+    - name: Set up MSSQL  # noqa command-instead-of-shell
+      shell: >-
+        MSSQL_SA_PASSWORD={{ mssql_password | quote }}
+        {{ __mssql_conf_cli }} setup
+      environment:
+        ACCEPT_EULA: "Y"
+        MSSQL_PID: "{{ mssql_edition }}"
+      when: not __mssql_is_setup
+      register: __mssql_conf_setup
+      no_log: false   # changed from true
+      changed_when: true
+  rescue:
+    - name: Print output of failed task
+      fail:
+        msg: "{{ ansible_failed_result.stderr_lines }}"
+
+- name: Ensure that the tuned-profiles-mssql package is installed
+  package:
+    name: tuned-profiles-mssql
+    state: present
+
+- name: Ensure that the tuned service is started and enabled
+  service:
+    name: tuned
+    state: started
+    enabled: true
+
+- name: Get the active Tuned profiles
+  command: tuned-adm active
+  changed_when: false
+  register: __mssql_tuned_active_profiles
+
+# adding the mssql profile to the end of the list ensures
+# that it overrides conflicting settings in other profiles
+- name: Add mssql to the list of Tuned profiles
+  when: '"mssql" not in __mssql_tuned_active_profiles.stdout'
+  block:
+    - name: Attempt to add mssql to the list of Tuned profiles
+      command: >-
+        tuned-adm profile {{ __mssql_tuned_active_profiles.stdout
+        | regex_replace('^Current active profile: ', '') }} mssql
+      register: __mssql_tuned_adm_profile
+      changed_when: __mssql_tuned_adm_profile.stderr | length == 0
+      failed_when: false
+
+    # It is needed because there is a bug in tuned that causes issues when
+    # adding multiple profiles with common ancestors. Fail happens for example,
+    # when running `tuned-adm profile virtual-guest mssql` because both profiles
+    # include `throughput-performance`
+    # https://bugzilla.redhat.com/show_bug.cgi?id=1825882
+    - name: Remove troublemaking include from the mssql profile
+      lineinfile:
+        path: /usr/lib/tuned/mssql/tuned.conf
+        regexp: include=throughput-performance
+        state: absent
+      when: >-
+        "Cannot find profile 'throughput-performance'" in
+        __mssql_tuned_adm_profile.stderr
+
+    - name: Add the fixed mssql profile to the list of Tuned profiles
+      command: >-
+        tuned-adm profile {{ __mssql_tuned_active_profiles.stdout |
+        regex_replace('^Current active profile: ', '') }} mssql
+      when: >-
+        "Cannot find profile 'throughput-performance'" in
+        __mssql_tuned_adm_profile.stderr
+      register: __mssql_tuned_adm_profile
+      changed_when: __mssql_tuned_adm_profile.stderr | length == 0
+
+- name: Configure the Microsoft SQL Server Tools repository
+  yum_repository:
+    name: packages-microsoft-com-prod
+    description: Microsoft SQL Server Tools
+    baseurl: "{{ mssql_client_repository }}"
+    gpgcheck: true
+
+- name: Ensure that SQL Server client tools are installed
+  package:
+    name: "{{ __mssql_client_packages }}"
+    state: present
+  environment:
+    ACCEPT_EULA: Y
+
+- name: Set a new password for the MSSQL sa user
+  when:
+    - __mssql_conf_setup is skipped
+    - mssql_password is not none
+  block:
+    - name: Prepare MSSQL and facts for logging in
+      include_tasks: verify_password.yml
+
+    # Upgrading to SQL Server 2022 takes ~20 seconds more
+    - name: Wait for mssql-server to prepare for client connections
+      wait_for:
+        path: /var/opt/mssql/log/errorlog
+        search_regex: SQL Server is now ready for client connections
+        delay: 3
+        timeout: 40
+
+    - name: Check if the set password matches the existing password
+      command: "{{ __mssql_sqlcmd_login_cmd }} -Q 'SELECT @@VERSION'"
+      ignore_errors: true
+      changed_when: false
+      register: __mssql_password_query
+      no_log: true
+
+    - name: Ensure that the mssql-server service is stopped
+      service:
+        name: mssql-server
+        state: stopped
+      when: __mssql_password_query is failed
+      notify: Restart the mssql-server service
+
+    - name: Gather package facts
+      package_facts:
+        manager: auto
+      no_log: true
+
+    # Setting MSSQL_SA_PASSWORD inline for security because setting it with
+    # environment: reveals the value when running playbooks with high verbosity
+    - name: Change the password of the sa user
+      block:
+        - name: Change the password of sa user  # noqa command-instead-of-shell
+          shell: >-
+            MSSQL_SA_PASSWORD={{ mssql_password | quote }}
+            {{ __mssql_conf_cli }} set-sa-password
+          when: __mssql_password_query is failed
+          notify: Restart the mssql-server service
+          register: __mssql_set_ha_password
+          no_log: true
+          changed_when: true
+      rescue:
+        - name: Workaround for expected error on version 2022
+          fail:
+            msg: "{{ ansible_failed_result.stderr_lines }}"
+          when:
+            - ansible_facts.packages["mssql-server"][0]["version"].split(".")
+              | first | int != 16
+            - >-
+              not "Unable to set the system administrator password. Please
+              consult the ERRORLOG" in __mssql_set_ha_password.stdout
+
+# Input files var as list even when provided as sting
+# Keep this task after setting password
+- name: Pre-input SQL scripts to SQL Server
+  vars:
+    __mssql_sql_files_to_input: "{{
+      mssql_pre_input_sql_file
+      if mssql_pre_input_sql_file | type_debug == 'list'
+      else
+      [mssql_pre_input_sql_file] }}"
+  include_tasks: input_sql_files.yml
+  when: mssql_pre_input_sql_file != []
+
+- name: Set a new edition for MSSQL
+  when:
+    - __mssql_conf_setup is skipped
+    - mssql_edition is not none
+  block:
+    - name: Check if the set edition matches the existing edition
+      shell: |
+        errorlog_edition="$(grep -oi '{{ mssql_edition }} edition' \
+        {{ __mssql_errorlog.stdout }})"
+        if [ -z "${errorlog_edition}" ]; then
+          edition_matches=false
+        else
+          edition_matches=true
+        fi
+        echo "${edition_matches}"
+      register: __mssql_edition_matches
+      changed_when: false
+
+    - name: Ensure that the mssql-server service is stopped
+      service:
+        name: mssql-server
+        state: stopped
+      when: not __mssql_edition_matches.stdout | bool
+      notify: Restart the mssql-server service
+
+    - name: Gather package facts
+      package_facts:
+        manager: auto
+      no_log: true
+
+    - name: Change the edition of MSSQL
+      block:
+        - name: Change the edition of MSSQL
+          command: "{{ __mssql_conf_cli }} set-edition"
+          environment:
+            MSSQL_PID: "{{ mssql_edition }}"
+          register: __mssql_conf_set_edition
+          changed_when: '"The new edition" in __mssql_conf_set_edition.stdout'
+          when: not __mssql_edition_matches.stdout | bool
+          notify: Restart the mssql-server service
+          no_log: true
+      rescue:
+        - name: Workaround for expected error on version 2022
+          fail:
+            msg: "{{ ansible_failed_result.stderr_lines }}"
+          when:
+            - ansible_facts.packages["mssql-server"][0]["version"].split(".")
+              | first | int != 16
+            - >-
+              not "\nThe licensing PID was successfully processed."
+              in __mssql_conf_set_edition.stdout
+
+- name: Configure the IP address setting
+  include_tasks: mssql_conf_setting.yml
+  vars:
+    __mssql_conf_setting: "network ipaddress"
+    __mssql_conf_setting_value: "{{ mssql_ip_address }}"
+  when: mssql_ip_address is not none
+
+- name: Register the previous tcpport setting
+  when: mssql_manage_firewall | bool
+  command: grep '^tcpport = ' {{ __mssql_conf_path }}
+  failed_when: false
+  changed_when: false
+  register: __mssql_previous_tcp_port
+
+- name: Open the TCP port {{ mssql_tcp_port }}
+  when: mssql_manage_firewall | bool
+  include_role:
+    name: firewall # changed from  fedora.linux_system_roles.firewall
+  vars:
+    firewall:
+      - port: "{{ mssql_tcp_port }}/tcp"
+        state: enabled
+        permanent: true
+        runtime: true
+
+- name: Configure the TCP port setting to {{ mssql_tcp_port }}
+  include_tasks: mssql_conf_setting.yml
+  vars:
+    __mssql_conf_setting: "network tcpport"
+    __mssql_conf_setting_value: "{{ mssql_tcp_port }}"
+
+- name: Close the previously set SQL Server TCP port if it changed
+  vars:
+    # Empty previous tcp port setting means that the port is default 1433
+    __tcpport: >-
+      {{ __mssql_previous_tcp_port.stdout | regex_search('[1-9][0-9]{0,4}')
+      if __mssql_previous_tcp_port.stdout
+      else '1433' }}
+    firewall:
+      - port: "{{ __tcpport }}/tcp"
+        state: disabled
+        permanent: true
+        runtime: true
+  include_role:
+    name: fedora.linux_system_roles.firewall
+  when:
+    - mssql_manage_firewall | bool
+    - __tcpport | int != mssql_tcp_port | int
+
+- name: Configure the sqlagent setting
+  include_tasks: mssql_conf_setting.yml
+  vars:
+    __mssql_conf_setting: "sqlagent enabled"
+    __mssql_conf_setting_value: "{{ mssql_enable_sql_agent }}"
+  when: mssql_enable_sql_agent is not none
+
+- name: Ensure the package {{ __mssql_server_fts_packages }}
+  package:
+    name: "{{ __mssql_server_fts_packages }}"
+    state: "{{ 'present' if mssql_install_fts | bool else 'absent' }}"
+  when: mssql_install_fts is not none
+  notify: Restart the mssql-server service
+
+- name: Ensure the package {{ __mssql_powershell_packages }}
+  package:
+    name: "{{ __mssql_powershell_packages }}"
+    state: "{{ 'present' if mssql_install_powershell | bool else 'absent' }}"
+  when: mssql_install_powershell is not none
+
+- name: Configure HA
+  when: mssql_enable_ha is not none
+  block:
+    - name: Ensure the package {{ __mssql_server_ha_packages }}
+      package:
+        name: "{{ __mssql_server_ha_packages }}"
+        state: "{{ 'present' if mssql_enable_ha | bool else 'absent' }}"
+      notify: Restart the mssql-server service
+
+    - name: Configure the hadrenabled setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: "hadr hadrenabled"
+        __mssql_conf_setting_value: "{{ 1 if mssql_enable_ha else 0 }}"
+
+- name: Tune MSSQL for FUA-capable storage
+  when: mssql_tune_for_fua_storage is not none
+  block:
+    - name: Check if the 3979 trace flag is enabled
+      command: grep '^traceflag[0-9] = ' {{ __mssql_conf_path }}
+      failed_when: false
+      changed_when: false
+      register: __mssql_get_traceflag
+
+    - name: Set the 3979 traceflag
+      command: "{{ __mssql_conf_cli }} traceflag 3979 on"
+      when:
+        - mssql_tune_for_fua_storage | bool
+        - "'3979' not in __mssql_get_traceflag.stdout"
+      changed_when: true
+
+    - name: Unset the 3979 traceflag
+      command: "{{ __mssql_conf_cli }} traceflag 3979 off"
+      when:
+        - not mssql_tune_for_fua_storage | bool
+        - "'3979' in __mssql_get_traceflag.stdout"
+      changed_when: true
+
+    # the alternatewritethrough must be set to `false` as per MS docs
+    - name: Configure the alternatewritethrough setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: "control alternatewritethrough"
+        __mssql_conf_setting_value: "0"
+
+    - name: Configure the writethrough setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: "control writethrough"
+        __mssql_conf_setting_value: >-
+          {{ 1 if mssql_tune_for_fua_storage else 0 }}
+
+- name: Configure TLS encryption
+  when:
+    - mssql_tls_enable is not none
+  block:
+    - name: >-
+        Create certificate and private_key files and set mssql_tls_cert
+        and _private_key
+      when:
+        - mssql_tls_enable | bool
+        - mssql_tls_certificates | length > 0
+      block:
+        - name: Create certificates using the certificate role
+          include_role:
+            name: fedora.linux_system_roles.certificate
+          vars:
+            certificate_requests: |
+              {% for _cert in mssql_tls_certificates %}
+              {%   set _basename = _cert.name | basename %}
+              {%   set _ = _cert.__setitem__('name', _basename) %}
+              {%   set _ = _cert.__setitem__('owner', 'mssql') %}
+              {%   set _ = _cert.__setitem__('group', 'mssql') %}
+              {%   set _ = _cert.__setitem__('mode', '0600') %}
+              {% endfor %}
+              {{ mssql_tls_certificates }}
+
+        - name: Set mssql_tls_cert and _private_key based on the cert name
+          set_fact:
+            mssql_tls_cert: "{{ mssql_tls_certificates.0.name }}.crt"
+            mssql_tls_private_key: "{{ mssql_tls_certificates.0.name }}.key"
+
+    - name: Copy certificate and private_key files to the host
+      when:
+        - mssql_tls_enable | bool
+        - mssql_tls_certificates | length == 0
+      copy:
+        src: "{{ item }}"
+        remote_src: "{{ mssql_tls_remote_src }}"
+        dest: >-
+          /etc/pki/tls/{{ 'certs' if item == mssql_tls_cert
+          else 'private' }}/{{ item | basename }}
+        owner: mssql
+        group: mssql
+        mode: 0600
+        force: "{{ mssql_tls_force }}"
+      with_items:
+        - "{{ mssql_tls_cert }}"
+        - "{{ mssql_tls_private_key }}"
+
+    - name: Configure the tlscert setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_tls_cert_dest: >-
+          /etc/pki/tls/certs/{{ mssql_tls_cert | basename }}
+        __mssql_conf_setting: "network tlscert"
+        __mssql_conf_setting_value: >-
+          {{ __mssql_tls_cert_dest if mssql_tls_enable else 'unset' }}
+
+    - name: Configure the tlskey setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_tls_private_key_dest: >-
+          /etc/pki/tls/private/{{ mssql_tls_private_key | basename }}
+        __mssql_conf_setting: "network tlskey"
+        __mssql_conf_setting_value: >-
+          {{ __mssql_tls_private_key_dest if mssql_tls_enable else 'unset' }}
+
+    - name: Configure the tlsprotocols setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: "network tlsprotocols"
+        __mssql_conf_setting_value: >-
+          {{ mssql_tls_version if mssql_tls_enable else 'unset' }}
+
+    - name: Configure the forceencryption setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: "network forceencryption"
+        __mssql_conf_setting_value: "{{ '1' if mssql_tls_enable else 'unset' }}"
+
+- name: Configure Active Directory authentication
+  vars:
+    __mssql_kinit_user: >-
+      {{ ad_integration_user }}@{{ ad_integration_realm | upper }}
+  when: mssql_ad_configure | bool
+  block:
+    - name: Join to realm {{ ad_integration_realm }}
+      include_role:
+        name: fedora.linux_system_roles.ad_integration
+
+    - name: Ensure the adutil package
+      package:
+        name: adutil
+        state: present
+
+    - name: Print credential caches to check if AD principal exists
+      command: klist -l
+      register: __mssql_klist
+      changed_when: false
+      failed_when: false
+
+    # Do not fail when there are no tickets
+    - name: Print the status of credential cache for {{ __mssql_kinit_user }}
+      shell: >-
+        set -euo pipefail;
+        klist -l $(klist -l | grep {{ __mssql_kinit_user }} | awk '{print $2}')
+      register: __mssql_klist_kinit_user
+      when: __mssql_kinit_user in __mssql_klist.stdout
+      changed_when: false
+
+    - name: Obtain Kerberos ticket of the AD user {{ ad_integration_user }}
+      shell: >-
+        set -euo pipefail;
+        echo {{ ad_integration_password | quote }}
+        | kinit {{ __mssql_kinit_user }}
+      when: >-
+        (__mssql_kinit_user not in __mssql_klist.stdout)
+        or
+        ("(Expired)" in __mssql_klist_kinit_user.stdout | d())
+      no_log: true
+      changed_when: true
+
+    # Do not fail if account does not exist
+    - name: Check if SQL user exists {{ mssql_ad_sql_user_name }}
+      command: >-
+        adutil account exists
+        --name {{ mssql_ad_sql_user_name }}
+        --accept-eula
+      register: __mssql_adutil_account_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Verify password provided for user {{ mssql_ad_sql_user_name }}
+      command: >-
+        sshpass -p {{ mssql_ad_sql_password | quote }}
+        ssh -o StrictHostKeyChecking=no
+        -l {{ mssql_ad_sql_user_name }}@{{ ad_integration_realm }}
+        {{ ansible_fqdn }} id
+      register: __mssql_sql_user_ssh
+      ignore_errors: true
+      changed_when: false
+      when: __mssql_adutil_account_exists.stdout | bool
+      no_log: true
+
+    - name: Update password for the SQL user {{ mssql_ad_sql_user_name }}
+      command: >-
+        adutil account setpassword
+        --name {{ mssql_ad_sql_user_name }}
+        --password {{ mssql_ad_sql_password | quote }}
+      when: __mssql_sql_user_ssh is failed
+      no_log: true
+      changed_when: true
+
+    - name: In AD server create user {{ mssql_ad_sql_user_name }}
+      command: >-
+        adutil user create
+        --name {{ mssql_ad_sql_user_name }}
+        --password {{ mssql_ad_sql_password | quote }}
+        --distname {{ mssql_ad_sql_user_dn | quote }}
+        --debug
+      register: __mssql_adutil_user_create
+      when: not __mssql_adutil_account_exists.stdout | bool
+      no_log: true
+      changed_when: true
+
+    - name: Get SPNs for the principal {{ mssql_ad_sql_user_name }}
+      command: adutil spn show --name {{ mssql_ad_sql_user_name }}
+      register: __mssql_adutil_spn_show
+      changed_when: false
+
+    - name: Register SPNs to the principal {{ mssql_ad_sql_user_name }}
+      command: >-
+        adutil spn addauto
+        --name {{ mssql_ad_sql_user_name }}
+        --spn-service MSSQLSvc
+        --spn-host {{ ansible_fqdn }}
+        --spn-port {{ mssql_tcp_port }}
+        --yes
+        --debug
+      register: __mssql_adutil_spn_addauto
+      changed_when: >-
+        not "Type or value exists"
+        in __mssql_adutil_spn_addauto.stdout
+      when: >-
+        not "MSSQLSvc/" ~ ansible_fqdn ~ ":" ~ mssql_tcp_port
+        in __mssql_adutil_spn_show.stdout
+
+    - name: Get kvno of the SPN host
+      command: adutil account kvno {{ mssql_ad_sql_user_name }}
+      register: __mssql_kvno
+      changed_when: false
+
+    - name: Get stats of the keytab file
+      stat:
+        path: "{{ __mssql_keytab_path }}"
+      register: __mssql_keytab_stat
+
+    - name: Get keytab properties
+      command: klist -edk {{ __mssql_keytab_path }}
+      changed_when: false
+      when: __mssql_keytab_stat.stat.exists | bool
+      register: __mssql_keytab_properties
+
+    - name: Create keytab
+      command: >-
+        adutil keytab createauto
+        --password {{ mssql_ad_sql_password | quote }}
+        --path {{ __mssql_keytab_path }}
+        --spn-port {{ mssql_tcp_port }}
+        --spn-host {{ ansible_fqdn }}
+        --spn-service MSSQLSvc
+        --kvno {{ __mssql_kvno.stdout }}
+        --enctype aes256-cts-hmac-sha1-96,aes128-cts-hmac-sha1-96
+        --yes
+      when:
+        - >-
+          not __mssql_kvno.stdout ~ " MSSQLSvc/" ~ ansible_fqdn ~ ":"
+          ~ mssql_tcp_port ~ "@" ~ ad_integration_realm | upper
+          ~ " (aes256-cts-hmac-sha1-96)"
+          in __mssql_keytab_properties.stdout | d()
+        - >-
+          not __mssql_kvno.stdout ~ " MSSQLSvc/" ~ ansible_fqdn ~ ":"
+          ~ mssql_tcp_port ~ "@" ~ ad_integration_realm | upper
+          ~ " (aes128-cts-hmac-sha1-96)"
+          in __mssql_keytab_properties.stdout | d()
+      notify: Restart the mssql-server service
+      no_log: true
+      changed_when: true
+
+    - name: Add an entry in the keytab for the principal name and password
+      command: >-
+        adutil keytab create
+        --password {{ mssql_ad_sql_password | quote }}
+        --path {{ __mssql_keytab_path }}
+        --principal {{ mssql_ad_sql_user_name }}
+        --kvno {{ __mssql_kvno.stdout }}
+        --enctype aes256-cts-hmac-sha1-96,aes128-cts-hmac-sha1-96
+      when:
+        - >-
+          not __mssql_kvno.stdout ~ " " ~ mssql_ad_sql_user_name ~ "@"
+          ~ ad_integration_realm | upper ~ " (aes256-cts-hmac-sha1-96)"
+          in __mssql_keytab_properties.stdout | d()
+        - >-
+          not __mssql_kvno.stdout ~ " " ~ mssql_ad_sql_user_name ~ "@"
+          ~ ad_integration_realm | upper ~ " (aes128-cts-hmac-sha1-96)"
+          in __mssql_keytab_properties.stdout | d()
+      notify: Restart the mssql-server service
+      no_log: true
+      changed_when: true
+
+    - name: Ensure correct permissions and ownership on the keytab
+      file:
+        path: "{{ __mssql_keytab_path }}"
+        owner: mssql
+        group: mssql
+        mode: 0440
+      notify: Restart the mssql-server service
+
+    - name: Configure the network.kerberoskeytabfile setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: network kerberoskeytabfile
+        __mssql_conf_setting_value: "{{ __mssql_keytab_path }}"
+
+    - name: Configure the network.kerberoskeytabfile setting
+      include_tasks: mssql_conf_setting.yml
+      vars:
+        __mssql_conf_setting: network privilegedadaccount
+        __mssql_conf_setting_value: "{{ mssql_ad_sql_user_name }}"
+
+    - name: Create the privileged account login
+      vars:
+        __mssql_sql_files_to_input:
+          - ad_create_login.j2
+        __mssql_ad_user: >-
+          {{ mssql_ad_netbios_name }}\{{ ad_integration_user }}
+      include_tasks: input_sql_files.yml
+  rescue:
+    - name: Print output of failed task
+      fail:
+        msg: "{{ ansible_failed_result.stderr_lines }}"
+
+- name: Configure for high availability
+  when: mssql_ha_configure | bool
+  block:
+    - name: Verify that hosts with mssql_ha_replica_type=primary is available
+      assert:
+        that: ansible_play_hosts |
+            map('extract', hostvars, 'mssql_ha_replica_type') |
+            select('match', '^primary$') |
+            list |
+            length == 1
+        fail_msg:
+          - Host with mssql_ha_replica_type=primary failed earlier in the play.
+          - Therefore, it is not possible to configure for high availability.
+          - Fix the above error on the primary replica and re-run the role.
+      run_once: true
+
+    - name: Open required firewall ports and set required facts
+      block:
+        - name: >-
+            Open the port and enable the high-availability service in
+            firewall tcp port {{ mssql_ha_endpoint_port }}
+          when: mssql_manage_firewall | bool
+          include_role:
+            name: fedora.linux_system_roles.firewall
+          vars:
+            firewall:
+              - port: "{{ mssql_ha_endpoint_port }}/tcp"
+                state: enabled
+                permanent: true
+                runtime: true
+              - service: high-availability
+                state: enabled
+                permanent: true
+                runtime: true
+
+        # This is required because variables in vars/main.yml are mapped into
+        # global variables and the configure_ag.j2 needs them in host variables
+        - name: Set host variables
+          set_fact:
+            __mssql_ha_availability_mode: >-
+              {%- if mssql_ha_ag_cluster_type | lower == 'external' -%}
+              {%-   if mssql_ha_replica_type in ['primary', 'synchronous'] -%}
+              SYNCHRONOUS_COMMIT
+              {%-   elif mssql_ha_replica_type == 'asynchronous' -%}
+              ASYNCHRONOUS_COMMIT
+              {%-   elif mssql_ha_replica_type == 'witness' -%}
+              CONFIGURATION_ONLY
+              {%-   else -%}
+              null
+              {%-   endif -%}
+              {%- elif mssql_ha_ag_cluster_type | lower == 'none' -%}
+              {%-   if mssql_ha_replica_type in
+                __mssql_ha_replica_types_external -%}
+              ASYNCHRONOUS_COMMIT
+              {%-   elif mssql_ha_replica_type == 'witness' -%}
+              CONFIGURATION_ONLY
+              {%-   else -%}
+              null
+              {%-   endif -%}
+              {%- else -%}
+              null
+              {%- endif -%}
+            __mssql_ha_failover_mode: >-
+              {%- if mssql_ha_ag_cluster_type | lower == 'external' -%}
+              {%-   if mssql_ha_replica_type in
+                __mssql_ha_replica_types_external -%}
+              EXTERNAL
+              {%-   elif mssql_ha_replica_type == 'witness' -%}
+              MANUAL
+              {%-   else -%}
+              null
+              {%-   endif -%}
+              {%- elif mssql_ha_ag_cluster_type | lower == 'none' -%}
+              MANUAL
+              {%- else -%}
+              null
+              {%- endif -%}
+            __mssql_ha_seeding_mode: >-
+              {%- if mssql_ha_replica_type in
+                __mssql_ha_replica_types_external -%}
+              AUTOMATIC
+              {%- elif mssql_ha_replica_type == 'witness' -%}
+              MANUAL
+              {%- else -%}
+              null
+              {%- endif -%}
+
+    - name: Configure availability group on the primary node
+      any_errors_fatal: true
+      when: mssql_ha_replica_type == 'primary'
+      block:
+        - name: Ensure the package {{ __mssql_server_ha_packages }}
+          package:
+            name: "{{ __mssql_server_ha_packages }}"
+            state: "{{ 'present' if mssql_ha_configure | bool else 'absent' }}"
+          register: __mssql_server_ha_packages_install
+
+        - name: Enable the hadrenabled setting
+          include_tasks: mssql_conf_setting.yml
+          vars:
+            __mssql_conf_setting: "hadr hadrenabled"
+            __mssql_conf_setting_value: 1
+
+        # meta: flush_handlers does not support when conditional
+        - name: Restart the mssql-server service if hadrenabled task was changed
+          service:
+            name: mssql-server
+            state: restarted
+          # noqa no-handler
+          when: (__mssql_conf_set is changed) or
+            (__mssql_server_ha_packages_install is changed)
+
+        - name: Remove certificates
+          when: mssql_ha_reset_cert | bool
+          block:
+            - name: Remove certificate from SQL Server
+              vars:
+                __mssql_sql_files_to_input:
+                  - drop_cert.j2
+              include_tasks: input_sql_files.yml
+
+            - name: Remove certificate and private key files
+              file:
+                path: "{{ item }}"
+                state: absent
+              loop:
+                - "{{ __mssql_ha_cert_dest }}"
+                - "{{ __mssql_ha_private_key_dest }}"
+
+        # Required for configure_ag.j2 to set WRITE_LEASE_VALIDITY based on
+        # mssql-server ver
+        - name: Get mssql-server ver to see if WRITE_LEASE_VALIDITY is available
+          package_facts:
+            manager: auto
+          no_log: true
+
+        - name: Configure SQL entities on the primary replica
+          vars:
+            __mssql_sql_files_to_input:
+              - create_master_key_encryption.j2
+              - create_and_back_up_cert.j2
+              - enable_alwayson.j2
+              - configure_endpoint.j2
+              - create_ha_login.j2
+          include_tasks: input_sql_files.yml
+
+        # changed_when: false because role removes cert files after using them
+        - name: Fetch certificate files from the primary to the control node
+          fetch:
+            src: "{{ item.value }}"
+            dest: "{{ item.key }}"
+            flat: true
+          with_dict:
+            cert: "{{ __mssql_ha_cert_dest }}"
+            key: "{{ __mssql_ha_private_key_dest }}"
+          changed_when: false
+
+    # In the case of fail over the primary replica moves to a different server.
+    # This block identifies the current primary replica and works on it.
+    - name: Configure availability group on the current primary replica
+      any_errors_fatal: true
+      block:
+        - name: Get the current primary replica in SQL
+          vars:
+            __mssql_sql_files_to_input:
+              - ha_is_primary.sql
+          include_tasks: input_sql_files.yml
+
+        # [2] because ha_is_primary.sql returns required value on this line
+        - name: Set fact with the current primary replica
+          set_fact:
+            __mssql_ha_is_primary: |-
+              {% set hadr_curr_primary = [] %}
+              {% for item in ansible_play_hosts %}
+              {%   if hostvars[item]['__mssql_sqlcmd_input']['stdout']
+                   | int == 1 %}
+              {{ hadr_curr_primary.append(item) -}}
+              {%   endif %}
+              {% endfor %}
+              {%- if hadr_curr_primary | length > 0
+                and
+                hadr_curr_primary[0] == ansible_hostname %}
+              true
+              {%- elif hadr_curr_primary | length == 0
+                and
+                mssql_ha_replica_type == 'primary' %}
+              true
+              {%- else %}
+              false
+              {%- endif %}
+
+        # __mssql_single_node_test is to skip __mssql_ha_is_primary check when
+        # testing against a single node where SQL Always On cluster breaks and
+        # does not report the single node as primary because it needs more nodes
+        - name: Configure ag, grant permissions to login, replicate DBs
+          when: >-
+            __mssql_ha_is_primary | bool
+            or __mssql_single_node_test | d(false) | bool
+          vars:
+            __mssql_sql_files_to_input:
+              - configure_ag.j2
+              - grant_permissions_to_ha_login.j2
+              - replicate_db.j2
+          include_tasks: input_sql_files.yml
+
+    # In the case of fail over when primary is moved grant permission task above
+    # is not run on primary above hence we need to run it separately
+    - name: Grant permissions to ha login
+      vars:
+        __mssql_sql_files_to_input:
+          - grant_permissions_to_ha_login.j2
+      include_tasks: input_sql_files.yml
+      when:
+        - not __mssql_ha_is_primary
+        - mssql_ha_replica_type == 'primary'
+
+    - name: Configure availability group on not primary replicas
+      when: mssql_ha_replica_type in __mssql_ha_replica_types_secondary
+      block:
+        - name: Verify that hosts with replica_type=primary is available
+          assert:
+            that: ansible_play_hosts |
+                map('extract', hostvars, 'mssql_ha_replica_type') |
+                select('match', '^primary$') |
+                list |
+                length == 1
+            fail_msg:
+              - Host with mssql_ha_replica_type=primary failed earlier
+              - Therefore, it is not possible to configure for high availability
+              - Fix the above error on the primary replica and re-run the role
+          run_once: true
+
+        - name: Ensure the package {{ __mssql_server_ha_packages }}
+          package:
+            name: "{{ __mssql_server_ha_packages }}"
+            state: "{{ 'present' if mssql_ha_configure | bool else 'absent' }}"
+          register: __mssql_server_ha_packages_install
+
+        - name: Enable the hadrenabled setting
+          include_tasks: mssql_conf_setting.yml
+          vars:
+            __mssql_conf_setting: "hadr hadrenabled"
+            __mssql_conf_setting_value: 1
+
+        # flush_handlers task does not support when conditional
+        - name: Restart the mssql-server service if hadrenabled task was changed
+          service:
+            name: mssql-server
+            state: restarted
+          # noqa no-handler
+          when: (__mssql_conf_set is changed) or
+            (__mssql_server_ha_packages_install is changed)
+          register: __mssql_replica_restarted
+
+        - name: Remove certificate from SQL Server
+          vars:
+            __mssql_sql_files_to_input:
+              - drop_cert.j2
+          include_tasks: input_sql_files.yml
+          when: mssql_ha_reset_cert | bool
+
+        - name: Distribute certificate and private key to managed nodes
+          copy:
+            src: "{{ item.key }}"
+            dest: "{{ item.value }}"
+            owner: mssql
+            group: mssql
+            mode: 0660
+            force: true
+          with_dict:
+            cert: "{{ __mssql_ha_cert_dest }}"
+            key: "{{ __mssql_ha_private_key_dest }}"
+
+        - name: Configure SQL entities on not primary replicas
+          vars:
+            __mssql_sql_files_to_input:
+              - enable_alwayson.j2
+              - create_master_key_encryption.j2
+              - restore_cert.j2
+              - configure_endpoint.j2
+              - create_ha_login.j2
+              - join_to_ag.j2
+              - grant_permissions_to_ha_login.j2
+          include_tasks: input_sql_files.yml
+      always:
+        # changed_when: false because this task removes remnants of cert files
+        - name: Remove certificate and private key from the control node
+          delegate_to: localhost
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - cert
+            - key
+          changed_when: false
+
+    - name: Configure pacemaker
+      when: mssql_ha_ag_cluster_type | lower == 'external'
+      block:
+        - name: Save credentials for the SQL Server login {{ mssql_ha_login }}
+          copy:
+            content: |
+              {{ mssql_ha_login }}
+              {{ mssql_ha_login_password }}
+            dest: /var/opt/mssql/secrets/passwd
+            owner: root
+            group: root
+            mode: 0400
+            force: true
+          no_log: true
+
+        - name: Run ha_cluster to configure pacemaker
+          include_role:
+            name: fedora.linux_system_roles.ha_cluster
+          when: mssql_ha_cluster_run_role | bool
+
+    # Configure on a current primary identified above
+    - name: Configure listener for the availability group {{ mssql_ha_ag_name }}
+      vars:
+        __mssql_sql_files_to_input:
+          - configure_listener.j2
+      include_tasks: input_sql_files.yml
+      when:
+        - mssql_ha_ag_cluster_type | lower == 'external'
+        - __mssql_ha_is_primary | bool
+
+- name: Ensure the ansible_managed header in {{ __mssql_conf_path }}
+  vars:
+    __lsr_ansible_managed: "{{ lookup('template', 'get_ansible_managed.j2') }}"
+  blockinfile:
+    path: "{{ __mssql_conf_path }}"
+    block: "{{ __lsr_ansible_managed }}"
+    insertbefore: BOF
+
+# Keep these 2 tasks at the bottom, they must run at the end of the role
+- name: Flush handlers prior to inputting post SQL scripts
+  meta: flush_handlers
+
+# Input files var as list even when provided as sting
+- name: Post-input SQL scripts to SQL Server
+  vars:
+    __mssql_sql_files_to_input: "{{
+      mssql_post_input_sql_file
+      if mssql_post_input_sql_file | type_debug == 'list'
+      else
+      [mssql_post_input_sql_file]
+    }}"
+  include_tasks: input_sql_files.yml
+  when: mssql_post_input_sql_file != []
