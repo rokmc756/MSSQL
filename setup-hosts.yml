@@ -1,5 +1,5 @@
 ---
-- hosts: rk8-single-db
+- hosts: rk8-mssql
   gather_facts: true
   become: yes
   vars:

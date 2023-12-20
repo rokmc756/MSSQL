@@ -1,10 +1,1 @@
-[all:vars]
-ssh_key_filename="id_rsa"
-remote_machine_username="jomoon"
-remote_machine_password="changeme"
-
-# For Oracle or MS-SQL Database
-# rk8-single-db ansible_ssh_host=192.168.56.192
-
-[databases]
-rk8-single-db ansible_ssh_host=192.168.0.189
+ansible-hosts-rk8
