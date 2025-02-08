@@ -1,0 +1,21 @@
+---
+- name: Remove Ports
+  firewalld:
+    zone: public
+    port: '{{ item.port }}/{{ item.proto }}'
+    permanent: true
+    state: disabled
+    immediate: yes
+  with_items:
+    - '{{ _mssql.ports }}'
+  register: remove_ports
+- debug: msg={{ remove_ports }}
+
+
+
+- name: Daemon Reload
+  systemd:
+    daemon_reload: yes
+  register: daemon_reload
+- debug: msg={{ daemon_reload }}
+

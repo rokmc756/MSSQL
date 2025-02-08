@@ -1,0 +1,34 @@
+---
+- name: Enable Firewalld
+  systemd:
+    name: 'firewalld'
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+
+- name: Open Firewall
+  firewalld:
+    port: '{{ item.port }}/{{ item.proto }}'
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: yes
+  with_items:
+    - '{{ _mssql.ports }}'
+
+
+#- name: Whitelist of Ip addresses
+#  firewalld:
+#    zone: public
+#    rich_rule: "rule family=ipv4 source address={{ hostvars[item][_netdev]['ipv4']['address'] }} accept"
+#    permanent: true
+#    state: enabled
+
+
+#- name: Whitelist of Ip addresses
+#  firewalld:
+#    zone: public
+#    source: "{{ hostvars[item][_netdev]['ipv4']['address'] }}/24"
+#    permanent: true
+#    state: enabled

@@ -1,0 +1,22 @@
+---
+- name: Stop Oracle Listener
+  become_user: "{{ _oracle.user }}"
+  shell: |
+    source ~/.bashrc && {{ _oracle.home_dir }}/bin/lsnrctl stop
+  register: stop_oracle_listener
+- debug: msg={{ stop_oracle_listener }}
+
+
+- name: Stop and Disable Oracle Database Service
+  become_user: "{{ _oracle.root_user }}"
+  systemd:
+    name: dbora
+    state: stopped
+    enabled: yes
+    daemon_reload: yes
+  register: stop_dbora_service
+  until: stop_dbora_service is succeeded
+  retries: 3
+  delay: 30
+- debug: msg={{ stop_dbora_service }}
+

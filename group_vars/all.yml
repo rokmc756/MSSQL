@@ -1,0 +1,72 @@
+---
+ansible_ssh_pass: changeme
+ansible_become_pass: changeme
+
+_mssql:
+  cluster_name: jack-kr-mssql
+  major_version: ""
+  minor_version: ""
+  patch_version: ""
+  build_version: ""
+  os_version: el8
+  arch_type: x86_64
+  bin_type: rpm
+  db_name: mssql_testdb
+  db_user: jomoon
+  domain: "jtest.pivotal.io"
+  repo_url: ""
+  download_url: ""
+  download: false
+  host_num: "{{ groups['all'] | length }}"
+  base_path: "/root"
+  net:
+    type: "virtual"                # Or Physical
+    gateway: "192.168.0.1"
+    ipaddr0: "192.168.0.15"
+    ipaddr1: "192.168.1.15"
+    ipaddr2: "192.168.2.15"
+  client:
+    net:
+      type: "virtual"              # Or Physical
+      cores: 1
+      ipaddr0: "192.168.0.15"
+      ipaddr1: "192.168.1.15"
+      ipaddr2: "192.168.2.15"
+  ports:
+    - { proto: "tcp",       port: "1433" }
+  vms:
+    rk9: [ "rk8-single-db", "rk9-freeipa" ]
+    ubt24: [ "ubt24-single-db", "rk9-freeipa" ]
+  debug_opt: ""  # --debug
+
+
+_jdk:
+  oss:
+    install: true
+    jvm_home: "/usr/lib/jvm"
+    major_version: "1"
+    minor_version: "8"
+    patch_version: "0"
+    # 1.8.0
+    # 11.0.4
+    # 17.0.2
+  oracle:
+    install: false
+    jvm_home: "/usr/lib/jvm"
+    major_version: "13"
+    minor_version: "0"
+    patch_version: "2"
+    download: false
+
+
+vmware:
+  esxi_hostname: "192.168.0.231"
+  esxi_username: "root"
+  esxi_password: "Changeme34#$"
+
+
+kvm:
+  hostname: "192.168.0.101"
+  username: "root"
+  password: "changeme"
+

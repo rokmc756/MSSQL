@@ -1,1 +1,67 @@
-- debug: msg={{ "Let's uninstall" }}
+---
+- name: Remove Ports
+  firewalld:
+    zone: public
+    port: "1433/tcp"
+    permanent: yes
+    immediate: yes
+    state: disabled
+  register: remove_ports
+  ignore_errors: true
+- debug: msg={{ remove_ports }}
+
+
+- name: Reload Firewalld
+  shell: |
+    firewall-cmd --reload
+  register: reload_firewalld
+  ignore_errors: true
+- debug: msg={{ reload_firewalld }}
+
+
+- name: Stop and Disable MSSQL Server
+  systemd:
+    name: mssql-server
+    state: stopped
+    enabled: no
+    daemon_reload: yes
+  register: stop_mssql_service
+  until: stop_mssql_service is succeeded
+  retries: 3
+  delay: 30
+- debug: msg={{ stop_mssql_service }}
+
+
+- name: Uninstall MSSQL Server Package
+  package:
+    name: mssql-server
+    state: absent
+  register: uninstall_mssql_pkgs
+  until: uninstall_mssql_pkgs is succeeded
+  retries: 3
+  delay: 30
+- debug: msg={{ uninstall_mssql_pkgs is succeeded }}
+
+
+- name: Delete MSSQL Files
+  file:
+    path: "{{ item }}"
+    state: absent
+  register: delete_oracle_systemd
+  ignore_errors: true
+  with_items:
+    - "/var/opt/mssql"
+    - "/root/pxf-queries"
+  notify:
+    - Restart System
+    - Waiting for Server to Come Back after Reboot
+
+
+- meta: flush_handlers
+
+
+- name: Wait 300 Seconds, but Only Start Checking after 10 Seconds
+  wait_for_connection:
+    delay: 10
+    timeout: 300
+

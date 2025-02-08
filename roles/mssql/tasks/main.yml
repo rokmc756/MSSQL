@@ -1,27 +1,40 @@
 ---
-# Install Oracle Database
-#
-# for now fail if it's not a Red Hat based system
-- name: Check OS ( Oracle )
+- name: Check OS ( MSSQL )
   fail: msg="Not a Red Hat based system!"
   when: ansible_os_family != 'RedHat' or ansible_os_family != 'CentOS' or ansible_os_family != 'Rocky'
 
-#
-- name: Install MS-SQL on Red Hat / CentOS
-  import_tasks: install.yml
-  tags: install
 
-#
+- name: Set Facts for Network and Packages Informations
+  import_tasks: set-facts.yml
+  tags: config, install, uninstall, upgrade, setup, remove, prepare, create, delete
+
+
+- name: Configure Firewall
+  import_tasks: ext/config-firewall.yml
+  tags: enable, config, install
+  when: ( firewall is defined and firewall == true ) or ( mssql_all is defined and mssql_all == true )
+
+
+- name: Install MS-SQL
+  import_tasks: install.yml
+  tags: setup, install
+  when: ( db is defined and db == true ) or ( mssql_all is defined and mssql_all == true )
+
+
 - name: Preparing sample data to interact with PXF
   import_tasks: prepare-sample-data-pxf.yml
-  tags: install
+  tags: prepare, install
+  when: ( data is defined and data == true ) or ( mssql_all is defined and mssql_all == true )
 
-#
-- name: Uninstall MS-SQL on Red Hat / CentOS
+
+- name: Uninstall MS-SQL
   import_tasks: uninstall.yml
-  tags: uninstall
+  tags: delete, remove, uninstall
+  when: ( db is defined and db == true ) or ( mssql_all is defined and mssql_all == true )
 
-#
+
 - name: Upgrade MS-SQL on Red Hat / CentOS
   import_tasks: upgrade.yml
   tags: upgrade
+  when: ( db is defined and db == true ) or ( mssql_all is defined and mssql_all == true )
+

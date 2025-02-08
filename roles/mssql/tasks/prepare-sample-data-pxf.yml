@@ -1,61 +1,55 @@
-#
-- name: Creates directory for PXF sample script and queries
-  become_user: root
+---
+- name: Creates Directory for PXF Sample Script and Queries
+  # become_user: root
   file:
-    path: /root/pxf-queries/sqls
+    path: "{{ _mssql.base_path }}/pxf-queries/sqls"
     state: directory
     owner: root
     group: root
     mode: 0775
     recurse: yes
 
-#
-- name: Copy sample scripts to interact with PXF
-  become_user: root
+
+- name: Copy Sample Scripts to Interact with PXF
+  # become_user: root
   template: src=pxf-queries/{{ item.fn }}.j2 dest={{ item.copy_dir }}/{{ item.fn }} owner=root group=root mode=0755 force=yes
-  register: script_interact_pxf_copied
+  register: copy_script_interact_pxf
   with_items:
-    - { fn: "00-change-sa-pass.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "01-create-db.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "02-create-table.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "03-remote-access.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "04-create-user.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "06-sample-connect.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "05-create-sample-table.sh", copy_dir: "/root/pxf-queries/" }
+    - { fn: "00-change-sa-pass.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "01-create-db.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "02-create-table.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "03-remote-access.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "04-create-user.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "06-sample-connect.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "05-create-sample-table.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+- debug: msg={{ copy_script_interact_pxf }}
 
-#
-- debug: msg={{ script_interact_pxf_copied }}
 
-#
-- name: Copy sample query files to interact with PXF
-  become_user: root
+- name: Copy Sample Query Files to Interact with PXF
+  # become_user: root
   template: src=pxf-queries/sqls/{{ item.fn }}.j2 dest={{ item.copy_dir }}/{{ item.fn }} owner=root group=root mode=0644 force=yes
-  register: query_files_template_copied
+  register: copy_query_files_templates
   with_items:
-    - { fn: "01-create-db.sql", copy_dir: "/root/pxf-queries/sqls/" }
-    - { fn: "02-create-table.sql", copy_dir: "/root/pxf-queries/sqls/" }
-    - { fn: "03-remote-access.sql", copy_dir: "/root/pxf-queries/sqls/" }
-    - { fn: "04-create-user.sql", copy_dir: "/root/pxf-queries/sqls/" }
-    - { fn: "05-create-sample-table.sql", copy_dir: "/root/pxf-queries/sqls/" }
-    - { fn: "06-sample-connect.sql", copy_dir: "/root/pxf-queries/sqls/" }
+    - { fn: "01-create-db.sql", copy_dir: "{{ _mssql.base_path }}/pxf-queries/sqls/" }
+    - { fn: "02-create-table.sql", copy_dir: "{{ _mssql.base_path }}/pxf-queries/sqls/" }
+    - { fn: "03-remote-access.sql", copy_dir: "{{ _mssql.base_path }}/pxf-queries/sqls/" }
+    - { fn: "04-create-user.sql", copy_dir: "{{ _mssql.base_path }}/pxf-queries/sqls/" }
+    - { fn: "05-create-sample-table.sql", copy_dir: "{{ _mssql.base_path }}/pxf-queries/sqls/" }
+    - { fn: "06-sample-connect.sql", copy_dir: "{{ _mssql.base_path }}/pxf-queries/sqls/" }
+- debug: msg={{ copy_query_files_templates }}
 
-#
-- debug: msg={{ query_files_template_copied }}
 
-#
-- name: Run sample scripts to interact with PXF
+- name: Run Sample Scripts to Interact with PXF
   become_user: root
-  shell: "sh /root/pxf-queries/{{ item.fn }}"
-  register: sample_scripts_run
+  shell: "sh {{ _mssql.base_path }}/pxf-queries/{{ item.fn }}"
+  register: run_sample_scripts
   with_items:
-    - { fn: "00-change-sa-pass.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "01-create-db.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "02-create-table.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "03-remote-access.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "04-create-user.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "06-sample-connect.sh", copy_dir: "/root/pxf-queries/" }
-    - { fn: "05-create-sample-table.sh", copy_dir: "/root/pxf-queries/" }
-
-#
-- debug: msg={{ sample_scripts_run }}
+    - { fn: "00-change-sa-pass.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "01-create-db.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "02-create-table.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "03-remote-access.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "04-create-user.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "06-sample-connect.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+    - { fn: "05-create-sample-table.sh", copy_dir: "{{ _mssql.base_path }}/pxf-queries/" }
+- debug: msg={{ run_sample_scripts }}
 

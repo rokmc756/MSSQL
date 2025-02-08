@@ -9,7 +9,7 @@ mssql_password: "Changeme!@#$"
 mssql_edition: Developer
 mssql_tcp_port: 1433
 mssql_manage_firewall: true
-mssql_ip_address: "{{ hostvars[groups['databases'][0]]['ansible_eth0']['ipv4']['address'] }}"
+mssql_ip_address: "{{ hostvars[groups['databases'][0]][_netdev]['ipv4']['address'] }}"
 
 mssql_pre_input_sql_file: []
 mssql_post_input_sql_file: []
