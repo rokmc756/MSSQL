@@ -118,8 +118,3 @@ $ sh force-remove-mssql.sh
 - [ ] Add Upgrade Playbook
 - [ ] Consider checking how to configure replication within this playbook
 
-
-
-
-Test
-
