@@ -1,4 +1,4 @@
-## What is the Purpose and Intension of this MS-SQL Ansible Playbook?
+## What is the Purpose and Intension of this MSSQL Ansible Playbook?
 This playbook is intended to deploy/install MS SQL Server Easily with Prepare Sample Data for Greenplum PXF.
 
 ## Where is it orignially came from and how has it been changed?
@@ -33,13 +33,13 @@ $ sudo yum install sshpass
 Configure Yum / Local & EPEL Repostiory
 
 ## Download / configure / run mssql playbook
-#### 1) Clone MS-SQL playbook into your local machine
+#### 1) Clone MSSQL playbook into your local machine
 ```
-$ git clone https://github.com/rokmc756/MS-SQL
+$ git clone https://github.com/rokmc756/MSSQL
 ```
-#### 2) Go to MS-SQL directory
+#### 2) Go to MSSQL directory
 ```
-$ cd MS-SQL
+$ cd MSSQL
 ```
 #### 3) Change password for sudo user of ansible or target host
 ```
